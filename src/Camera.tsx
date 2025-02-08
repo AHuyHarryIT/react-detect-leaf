@@ -8,7 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL;
 const videoConstraints = {
   width: 1280,
   height: 720,
-  facingMode: "user",
+  facingMode: "environment",
 };
 
 interface ProcessedImage {
