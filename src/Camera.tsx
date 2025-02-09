@@ -8,7 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL;
 const videoConstraints = {
   width: 1280,
   height: 720,
-  facingMode: "environment",
+  facingMode: "environment", // Use the back camera on mobile devices
 };
 
 interface ProcessedImage {
@@ -16,6 +16,7 @@ interface ProcessedImage {
   originalImageUrl: string;
   processedImageUrl?: string;
   status: "uploading" | "done" | "error";
+  source: "file" | "webcam";
   details?: {
     upload_message: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,13 +30,25 @@ const Camera: React.FC = () => {
   const webcamRef = useRef<Webcam>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [processedImages, setProcessedImages] = useState<ProcessedImage[]>([]);
-  // Use loading state only for the capture button.
+  // Loading state for the capture button.
   const [loading, setLoading] = useState<boolean>(false);
+  // Separate loading state for file uploads.
+  const [uploadLoading, setUploadLoading] = useState<boolean>(false);
+  // Track the cumulative number of files selected.
+  const [selectedFileCount, setSelectedFileCount] = useState<number>(0);
   const [selectedImage, setSelectedImage] = useState<ProcessedImage | null>(
     null,
   );
 
-  // Function to send image to the API and update its status.
+  // Compute counts.
+  const uploadedCount = processedImages.filter(
+    (img) => img.status === "done",
+  ).length;
+  const errorCount = processedImages.filter(
+    (img) => img.status === "error",
+  ).length;
+
+  // Function to send an image to the API and update its status.
   const processImage = async (imageDataUrl: string, id: string) => {
     try {
       const response = await axios.post(
@@ -80,63 +93,95 @@ const Camera: React.FC = () => {
     }
   };
 
-  // Add a new image (from webcam capture or file upload) and process it.
-  const handleNewImage = async (imageDataUrl: string) => {
+  // Handle a new image (from webcam capture or file upload) and insert it at the beginning.
+  const handleNewImage = async (
+    imageDataUrl: string,
+    source: "file" | "webcam" = "file",
+  ) => {
     const id =
       Date.now().toString() + Math.random().toString(36).substring(2, 5);
     setProcessedImages((prev) => [
+      { id, originalImageUrl: imageDataUrl, status: "uploading", source },
       ...prev,
-      { id, originalImageUrl: imageDataUrl, status: "uploading" },
     ]);
     await processImage(imageDataUrl, id);
   };
 
-  // Capture image from webcam and process.
+  // Capture an image from the webcam and process it.
   const capture = useCallback(async () => {
     if (webcamRef.current) {
       const imageSrc = webcamRef.current.getScreenshot();
       if (imageSrc) {
         setLoading(true);
-        await handleNewImage(imageSrc);
+        await handleNewImage(imageSrc, "webcam");
         setLoading(false);
       }
     }
   }, []);
 
   // Handle file input change for multiple uploads.
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const files = event.target.files;
     if (files) {
-      Array.from(files).forEach((file) => {
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const imageDataUrl = reader.result as string;
-          await handleNewImage(imageDataUrl);
-        };
-        reader.readAsDataURL(file);
-      });
+      setSelectedFileCount((prev) => prev + files.length);
+      const filesArray = Array.from(files);
+      setUploadLoading(true);
+      for (const file of filesArray) {
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const imageDataUrl = reader.result as string;
+            await handleNewImage(imageDataUrl, "file");
+            resolve();
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+      setUploadLoading(false);
     }
   };
 
-  // Allow drag-and-drop file upload.
+  // Allow drag-and-drop for file uploads.
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
   };
 
-  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
     const files = event.dataTransfer.files;
     if (files) {
-      Array.from(files).forEach((file) => {
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const imageDataUrl = reader.result as string;
-          await handleNewImage(imageDataUrl);
-        };
-        reader.readAsDataURL(file);
-      });
+      setSelectedFileCount((prev) => prev + files.length);
+      const filesArray = Array.from(files);
+      setUploadLoading(true);
+      for (const file of filesArray) {
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const imageDataUrl = reader.result as string;
+            await handleNewImage(imageDataUrl, "file");
+            resolve();
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+      setUploadLoading(false);
+    }
+  };
+
+  // Re-upload handler for images with errors.
+  const handleReupload = async (id: string) => {
+    setProcessedImages((prev) =>
+      prev.map((img) =>
+        img.id === id ? { ...img, status: "uploading" } : img,
+      ),
+    );
+    const image = processedImages.find((img) => img.id === id);
+    if (image) {
+      await processImage(image.originalImageUrl, id);
     }
   };
 
@@ -190,7 +235,9 @@ const Camera: React.FC = () => {
         className="mt-4 w-full max-w-3xl cursor-pointer rounded-lg border-2 border-dashed border-gray-400 p-8 text-center hover:border-blue-500"
       >
         <p className="text-gray-600">
-          Click here or drag and drop files to upload images
+          {uploadLoading
+            ? "Processing Uploads..."
+            : "Click here or drag and drop files to upload images"}
         </p>
         <input
           type="file"
@@ -202,7 +249,19 @@ const Camera: React.FC = () => {
         />
       </div>
 
-      {/* Scrollable List of Processed Images Thumbnails with Upload Status */}
+      {/* Display Cumulative Selected File Count */}
+      {selectedFileCount > 0 && (
+        <div className="mt-2 text-sm text-gray-600">
+          Files Selected: {selectedFileCount}
+        </div>
+      )}
+
+      {/* Display Uploaded Count */}
+      <div className="mt-1 text-sm text-gray-600">
+        Images Uploaded: {uploadedCount}
+      </div>
+
+      {/* Main Processed Images List */}
       {processedImages.length > 0 && (
         <div className="mt-8 w-full max-w-3xl">
           <h3 className="mb-4 text-xl font-semibold">Processed Images:</h3>
@@ -214,28 +273,72 @@ const Camera: React.FC = () => {
                 onClick={() => setSelectedImage(img)}
               >
                 <img
-                  src={
-                    img.processedImageUrl
-                      ? img.processedImageUrl
-                      : img.originalImageUrl
-                  }
+                  src={img.processedImageUrl || img.originalImageUrl}
                   alt="Processed result"
                   className="h-24 w-24 object-cover"
                 />
-                <div className="absolute inset-0 flex items-center justify-center">
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
                   {img.status === "uploading" && (
                     <span className="bg-opacity-75 rounded bg-gray-700 px-1 text-xs text-white">
                       Uploading...
                     </span>
                   )}
                   {img.status === "error" && (
-                    <span className="bg-opacity-75 rounded bg-red-700 px-1 text-xs text-white">
-                      Error
-                    </span>
+                    <>
+                      <span className="bg-opacity-75 rounded bg-red-700 px-1 text-xs text-white">
+                        Error
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReupload(img.id);
+                        }}
+                        className="mt-1 text-xs text-blue-300 underline"
+                      >
+                        Re-upload
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Separate List of Upload Errors (optional) */}
+      {errorCount > 0 && (
+        <div className="mt-8 w-full max-w-3xl">
+          <h3 className="mb-4 text-xl font-semibold">Upload Errors:</h3>
+          <div className="flex max-h-64 flex-wrap gap-4 overflow-y-scroll rounded border p-2">
+            {processedImages
+              .filter((img) => img.status === "error")
+              .map((img) => (
+                <div
+                  key={img.id}
+                  className="relative cursor-pointer rounded border p-1 hover:shadow-lg"
+                >
+                  <img
+                    src={img.originalImageUrl}
+                    alt="Error result"
+                    className="h-24 w-24 object-cover"
+                  />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <span className="bg-opacity-75 rounded bg-red-700 px-1 text-xs text-white">
+                      Error
+                    </span>
+                    <button
+                      onClick={() => handleReupload(img.id)}
+                      className="mt-1 text-xs text-blue-300 underline"
+                    >
+                      Re-upload
+                    </button>
+                  </div>
+                </div>
+              ))}
+          </div>
+          <div className="mt-1 text-sm text-gray-600">
+            Total Upload Errors: {errorCount}
           </div>
         </div>
       )}
@@ -254,9 +357,7 @@ const Camera: React.FC = () => {
           </h3>
           <img
             src={
-              selectedImage.processedImageUrl
-                ? selectedImage.processedImageUrl
-                : selectedImage.originalImageUrl
+              selectedImage.processedImageUrl || selectedImage.originalImageUrl
             }
             alt="Detail"
             className="mb-4 rounded-lg shadow-md"
